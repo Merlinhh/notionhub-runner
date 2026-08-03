@@ -1,0 +1,166 @@
+# NotionHub generated free workflow v2
+name: Keep免费版
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 触发原因
+        required: false
+        default: manual
+  schedule:
+    - cron: "30 16 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: notionhub-keep-sync-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: 同步Keep
+    runs-on: ubuntu-latest
+    env:
+      FREE_CONFIG_JSON: ${{ secrets.KEEP_FREE_CONFIG }}
+      SOURCE_REPOSITORY: malinkang/keep2notion
+      SOURCE_REF: notionhub-free-v1.0.0
+      SOURCE_SHA: 5218d3bea70b9c6ed4c0527581554705ce252c5e
+      REPOSITORY: ${{ github.repository }}
+      ARTIFACT_BRANCH: ${{ github.event.repository.default_branch }}
+      NOTIONHUB_ARTIFACT_ROOT: ${{ github.workspace }}/.notionhub-artifacts/keep
+      NOTIONHUB_ARTIFACT_PATH: .notionhub-artifacts/keep
+    steps:
+      - name: Checkout Runner 仓库
+        uses: actions/checkout@v4
+
+      - name: 检查免费版配置
+        id: config
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$FREE_CONFIG_JSON" ]; then
+            echo "::error title=Keep免费版未配置::请先在 NotionHub 插件里保存免费版配置。"
+            exit 1
+          fi
+          CONFIG_FILE="$RUNNER_TEMP/notionhub-free-keep.json"
+          printf '%s' "$FREE_CONFIG_JSON" > "$CONFIG_FILE"
+          chmod 600 "$CONFIG_FILE"
+
+          if ! jq -e '.schemaVersion == 1 and (.notion | type == "object") and (.account | type == "object") and (.options | type == "object")' "$CONFIG_FILE" >/dev/null; then
+            echo "::error title=Keep免费版配置无效::请回到 NotionHub 插件重新保存配置。"
+            exit 1
+          fi
+          python3 - "$CONFIG_FILE" <<'PY'
+          import json
+          import sys
+
+          def walk(value):
+              if isinstance(value, dict):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      yield from walk(child)
+              elif isinstance(value, str) and len(value) >= 4:
+                  yield value
+
+          config = json.load(open(sys.argv[1], encoding='utf-8'))
+          for value in walk(config):
+              escaped = value.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::add-mask::{escaped}')
+          PY
+          require_value() {
+            if [ -z "$(jq -r "$1 // empty" "$CONFIG_FILE")" ]; then
+              echo "::error title=Keep免费版配置缺失::缺少 $2，请回到插件重新保存。"
+              exit 1
+            fi
+          }
+          require_value '.notion.token' 'Notion token'
+          require_value '.notion.pages.root' 'Keep Notion 模板'
+          require_value '.account.mobile' 'Keep 手机号'
+          require_value '.account.password' 'Keep 密码'
+          echo "FREE_CONFIG_FILE=$CONFIG_FILE" >> "$GITHUB_ENV"
+          echo "heatmap=$(jq -r '.options.heatmap // true' "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout 固定开源版本
+        uses: actions/checkout@v4
+        with:
+          repository: malinkang/keep2notion
+          ref: notionhub-free-v1.0.0
+          path: .notionhub-source/keep
+          persist-credentials: false
+
+      - name: 校验开源版本
+        working-directory: .notionhub-source/keep
+        run: |
+          ACTUAL_SHA=$(git rev-parse HEAD)
+          if [ "$ACTUAL_SHA" != "$SOURCE_SHA" ]; then
+            echo "::error title=开源版本校验失败::malinkang/keep2notion@notionhub-free-v1.0.0 的提交与预期 SHA 不一致。"
+            exit 1
+          fi
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装开源同步程序
+        working-directory: .notionhub-source/keep
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install .
+
+      - name: 同步 Keep 运动记录
+        working-directory: .notionhub-source/keep
+        run: |
+          export NOTION_TOKEN="$(jq -r '.notion.token' "$FREE_CONFIG_FILE")"
+          export NOTION_PAGE="$(jq -r '.notion.pages.root' "$FREE_CONFIG_FILE")"
+          export KEEP_MOBILE="$(jq -r '.account.mobile' "$FREE_CONFIG_FILE")"
+          export KEEP_PASSWORD="$(jq -r '.account.password' "$FREE_CONFIG_FILE")"
+          export COUNTRY_CODE="$(jq -r '.account.countryCode // "86"' "$FREE_CONFIG_FILE")"
+          keep2notion
+
+      - name: 生成 Keep 热力图
+        if: steps.config.outputs.heatmap == 'true'
+        working-directory: .notionhub-source/keep
+        run: |
+          export NOTION_TOKEN="$(jq -r '.notion.token' "$FREE_CONFIG_FILE")"
+          github_heatmap notion --notion_token "$NOTION_TOKEN" --database_id "$DATABASE_ID" --date_prop_name "日期" --value_prop_name "分钟" --unit "分钟" --year "$(date +%Y)" --me "Keep" --without-type-name
+          update_heatmap
+      - name: 保存公开热力图
+        if: steps.config.outputs.heatmap == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d ".notionhub-artifacts/keep" ] || ! find ".notionhub-artifacts/keep" -type f -name '*.svg' -print -quit | grep -q .; then
+            echo "未生成热力图文件，跳过提交。"
+            exit 0
+          fi
+          if find ".notionhub-artifacts/keep" -type f ! -name '*.svg' -print -quit | grep -q .; then
+            echo "::error title=热力图产物无效::产物目录包含非 SVG 文件。"
+            exit 1
+          fi
+          while IFS= read -r file; do
+            if [ "$(wc -c < "$file")" -gt 1048576 ]; then
+              echo "::error title=热力图产物过大::$file 超过 1 MB。"
+              exit 1
+            fi
+          done < <(find ".notionhub-artifacts/keep" -type f -name '*.svg')
+          git config user.email "action@github.com"
+          git config user.name "NotionHub Action"
+          git add -- ".notionhub-artifacts/keep"
+          if git diff --cached --quiet; then
+            echo "热力图没有变化。"
+            exit 0
+          fi
+          git commit -m "chore: update keep heatmap"
+          BRANCH="$ARTIFACT_BRANCH"
+          for attempt in 1 2 3; do
+            git pull --rebase origin "$BRANCH"
+            if git push origin "HEAD:$BRANCH"; then exit 0; fi
+            [ "$attempt" = "3" ] && exit 1
+            sleep $((attempt * 2))
+          done
