@@ -109,8 +109,10 @@ jobs:
           }
           require_value '.notion.token' 'Notion token'
           require_value '.notion.pages.root' 'Keep Notion 模板'
-          require_value '.account.mobile' 'Keep 手机号'
-          require_value '.account.password' 'Keep 密码'
+          if [ "$(jq -r '.account.token // empty' "$FREE_CONFIG_FILE")" = "" ]; then
+            require_value '.account.mobile' 'Keep 手机号'
+            require_value '.account.password' 'Keep 密码'
+          fi
           echo "FREE_CONFIG_FILE=$CONFIG_FILE" >> "$GITHUB_ENV"
           echo "heatmap=$(jq -r '.options.heatmap // true' "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
 
@@ -148,8 +150,9 @@ jobs:
         run: |
           export NOTION_TOKEN="$(jq -r '.notion.token' "$FREE_CONFIG_FILE")"
           export NOTION_PAGE="$(jq -r '.notion.pages.root' "$FREE_CONFIG_FILE")"
-          export KEEP_MOBILE="$(jq -r '.account.mobile' "$FREE_CONFIG_FILE")"
-          export KEEP_PASSWORD="$(jq -r '.account.password' "$FREE_CONFIG_FILE")"
+          export KEEP_TOKEN="$(jq -r '.account.token // empty' "$FREE_CONFIG_FILE")"
+          export KEEP_MOBILE="$(jq -r '.account.mobile // empty' "$FREE_CONFIG_FILE")"
+          export KEEP_PASSWORD="$(jq -r '.account.password // empty' "$FREE_CONFIG_FILE")"
           export COUNTRY_CODE="$(jq -r '.account.countryCode // "86"' "$FREE_CONFIG_FILE")"
           keep2notion
 
