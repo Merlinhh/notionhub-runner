@@ -114,7 +114,7 @@ jobs:
             require_value '.account.password' 'Keep 密码'
           fi
           echo "FREE_CONFIG_FILE=$CONFIG_FILE" >> "$GITHUB_ENV"
-          echo "heatmap=$(jq -r '.options.heatmap // true' "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          echo "heatmap=$(jq -r '.options.heatmap != false' "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
 
       - name: Checkout 固定开源版本
         uses: actions/checkout@v4
@@ -161,6 +161,7 @@ jobs:
         working-directory: .notionhub-source/keep
         run: |
           export NOTION_TOKEN="$(jq -r '.notion.token' "$FREE_CONFIG_FILE")"
+          export NOTION_PAGE="$(jq -r '.notion.pages.root' "$FREE_CONFIG_FILE")"
           github_heatmap notion --notion_token "$NOTION_TOKEN" --database_id "$DATABASE_ID" --date_prop_name "日期" --value_prop_name "分钟" --unit "分钟" --year "$(date +%Y)" --me "Keep" --without-type-name
           update_heatmap
       - name: 保存公开热力图
